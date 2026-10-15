@@ -157,3 +157,33 @@ class ModernBertModel(nn.Module):
             x = layer(x, mask, position_ids)
 
         return self.final_norm(x)
+
+
+class ModernBertPredictionHead(nn.Module):
+    def __init__(self, config: ModernBertConfig):
+        super().__init__()
+
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.act = nn.GELU()
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(self.act(self.dense(x)))
+
+
+class ModernBertForMaskedLM(nn.Module):
+    def __init__(self, config: ModernBertConfig):
+        super().__init__()
+
+        self.config = config
+        self.model = ModernBertModel(config)
+        self.head = ModernBertPredictionHead(config)
+        self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=True)
+
+        # weight tying: decoder and token embedding share one (vocab_size, hidden_size) matrix
+        self.decoder.weight = self.model.embeddings.tok_embeddings.weight
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # (batch, seq_len) -> (batch, seq_len, vocab_size) logits
+        hidden = self.model(input_ids, attention_mask)
+        return self.decoder(self.head(hidden))
