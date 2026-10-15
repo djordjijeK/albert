@@ -97,7 +97,7 @@ class ModernBertAttention(nn.Module):
     def forward(self, x: torch.Tensor, mask: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         batch, seq_len, hidden_size = x.shape
 
-        # Create q, k and v vectors
+        # create q, k and v vectors
         qkv = self.Wqkv(x).view(batch, seq_len, 3, self.num_heads, self.head_dim)
         q, k, v = (t.transpose(1, 2) for t in qkv.unbind(dim=2))
 
@@ -109,6 +109,51 @@ class ModernBertAttention(nn.Module):
         dropout = self.dropout if self.training else 0.0
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=dropout)
 
-        # Join the heads again: (batch, heads, seq_len, head_dim) -> (batch, seq_len, hidden_size)
+        # join the heads again: (batch, heads, seq_len, head_dim) -> (batch, seq_len, hidden_size)
         out = out.transpose(1, 2).reshape(batch, seq_len, hidden_size)
         return self.out_drop(self.Wo(out))
+
+
+class ModernBertEncoderLayer(nn.Module):
+    def __init__(self, config: ModernBertConfig, layer_idx: int):
+        super().__init__()
+
+        # layer 0 gets its input from the embeddings, which already end with a LayerNorm
+        if layer_idx == 0:
+            self.attn_norm = nn.Identity()
+        else:
+            self.attn_norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=False)
+        self.attn = ModernBertAttention(config, layer_idx)
+        self.mlp_norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=False)
+        self.mlp = ModernBertMLP(config)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.attn_norm(x), mask, position_ids)
+        return x + self.mlp(self.mlp_norm(x))
+
+
+class ModernBertModel(nn.Module):
+    def __init__(self, config: ModernBertConfig):
+        super().__init__()
+
+        self.config = config
+        self.embeddings = ModernBertEmbeddings(config)
+        self.layers = nn.ModuleList(ModernBertEncoderLayer(config, i) for i in range(config.num_hidden_layers))
+        self.final_norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=False)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        batch, seq_len = input_ids.shape
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+
+        position_ids = torch.arange(seq_len, device=input_ids.device).expand(batch, seq_len)
+
+        global_mask = create_attention_mask(attention_mask)
+        local_mask = create_attention_mask(attention_mask, self.config.local_attention)
+
+        x = self.embeddings(input_ids)
+        for layer_idx, layer in enumerate(self.layers):
+            mask = global_mask if self.config.is_global_layer(layer_idx) else local_mask
+            x = layer(x, mask, position_ids)
+
+        return self.final_norm(x)
