@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from albert.config import ModernBertConfig
+from albert.load import load_checkpoint
 
 
 class ModernBertEmbeddings(nn.Module):
@@ -187,3 +188,13 @@ class ModernBertForMaskedLM(nn.Module):
         # (batch, seq_len) -> (batch, seq_len, vocab_size) logits
         hidden = self.model(input_ids, attention_mask)
         return self.decoder(self.head(hidden))
+
+    @classmethod
+    def from_pretrained(cls, repository_id: str) -> "ModernBertForMaskedLM":
+        model = cls(ModernBertConfig.from_pretrained(repository_id))
+        state_dict = load_checkpoint(repository_id)
+
+        state_dict.setdefault("decoder.weight", state_dict["model.embeddings.tok_embeddings.weight"])
+
+        model.load_state_dict(state_dict, strict=True)
+        return model.eval()
