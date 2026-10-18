@@ -1,9 +1,10 @@
 import torch
 import torch.nn.functional as F
+from huggingface_hub import hf_hub_download, list_repo_files
+from safetensors.torch import load_file
 from torch import nn
 
 from albert.config import ModernBertConfig
-from albert.load import load_checkpoint
 
 
 class ModernBertEmbeddings(nn.Module):
@@ -192,9 +193,18 @@ class ModernBertForMaskedLM(nn.Module):
     @classmethod
     def from_pretrained(cls, repository_id: str) -> "ModernBertForMaskedLM":
         model = cls(ModernBertConfig.from_pretrained(repository_id))
-        state_dict = load_checkpoint(repository_id)
+        state_dict = cls._load_checkpoint(repository_id)
 
         state_dict.setdefault("decoder.weight", state_dict["model.embeddings.tok_embeddings.weight"])
 
         model.load_state_dict(state_dict, strict=True)
         return model.eval()
+
+    @classmethod
+    def _load_checkpoint(cls, repository_id: str) -> dict[str, torch.Tensor]:
+        files = list_repo_files(repository_id)
+        if "model.safetensors" in files:
+            return load_file(hf_hub_download(repository_id, "model.safetensors"))
+
+        path = hf_hub_download(repository_id, "pytorch_model.bin")
+        return torch.load(path, map_location="cpu", weights_only=True)
