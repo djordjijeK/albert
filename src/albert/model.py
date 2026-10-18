@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn.functional as F
 from huggingface_hub import hf_hub_download, list_repo_files
@@ -185,10 +187,30 @@ class ModernBertForMaskedLM(nn.Module):
         # weight tying: decoder and token embedding share one (vocab_size, hidden_size) matrix
         self.decoder.weight = self.model.embeddings.tok_embeddings.weight
 
+        self.init_weights()
+
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
         # (batch, seq_len) -> (batch, seq_len, vocab_size) logits
         hidden = self.model(input_ids, attention_mask)
         return self.decoder(self.head(hidden))
+
+    def init_weights(self) -> None:
+        std_in = self.config.initializer_range
+        std_out = std_in / math.sqrt(2 * self.config.num_hidden_layers)
+
+        def init(module: nn.Linear | nn.Embedding, std: float) -> None:
+            cutoff = self.config.initializer_cutoff_factor * std
+            nn.init.trunc_normal_(module.weight, mean=0.0, std=std, a=-cutoff, b=cutoff)
+
+        init(self.model.embeddings.tok_embeddings, std_in)
+        for layer in self.model.layers:
+            init(layer.attn.Wqkv, std_in)
+            init(layer.attn.Wo, std_out)
+            init(layer.mlp.Wi, std_in)
+            init(layer.mlp.Wo, std_out)
+        init(self.head.dense, std_out)
+
+        nn.init.zeros_(self.decoder.bias)
 
     @classmethod
     def from_pretrained(cls, repository_id: str) -> "ModernBertForMaskedLM":
